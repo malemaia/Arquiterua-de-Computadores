@@ -8,7 +8,7 @@
 
 // 16 32-bit registers
 // Data-processing instructions
-//   ADD, SUB, AND, ORR
+//   ADD, SUB, AND, ORR , TST, CMP
 //   INSTR<cond><S> rd, rn, #immediate
 //   INSTR<cond><S> rd, rn, rm
 //    rd <- rn INSTR rm	      if (S) Update Status Flags
@@ -18,7 +18,8 @@
 //   Instr[25:20] = funct
 //                  [25]:    1 for immediate, 0 for register
 //                  [24:21]: 0100 (ADD) / 0010 (SUB) /
-//                           0000 (AND) / 1100 (ORR)
+//                           0000 (AND) / 1100 (ORR) /
+//							 1010 (CMP) / 1000 (TST);
 //                  [20]:    S (1 = update CPSR status Flags)
 //   Instr[19:16] = rn
 //   Instr[15:12] = rd
@@ -154,10 +155,10 @@ module arm(input  logic        clk, reset,
            output logic [31:0] ALUResult, WriteData,
            input  logic [31:0] ReadData);
 
-  logic [3:0] ALUFlags;
-  logic       RegWrite, 
-              ALUSrc, MemtoReg, PCSrc;
-  logic [1:0] RegSrc, ImmSrc, ALUControl;
+  logic [3:0] ALUFlags;                                //Sinais de Flags
+  logic       RegWrite, 							   //Sinal de controle para habilitar escrita do Registrador
+              ALUSrc, MemtoReg, PCSrc;				   //ALUSrc: controle para escolher SrcB;MemtoReg:Escolhe saida da memoria ou ALU;
+  logic [1:0] RegSrc, ImmSrc, ALUControl;			   //RegSrc escolhe operando entrada;ImmSrc: controle para tipo de extensao imediato;ALUControl:Tipo de operacao matematica da ALU;
 
   controller c(clk, reset, Instr[31:12], ALUFlags, 
                RegSrc, RegWrite, ImmSrc, 
@@ -186,10 +187,10 @@ module controller(input  logic         clk, reset,
   logic       PCS, RegW, MemW;
   
   decoder dec(Instr[27:26], Instr[25:20], Instr[15:12],
-              FlagW, PCS, RegW, MemW,
+              FlagW, PCS, RegW, MemW, NoWrite, 
               MemtoReg, ALUSrc, ImmSrc, RegSrc, ALUControl);
   condlogic cl(clk, reset, Instr[31:28], ALUFlags,
-               FlagW, PCS, RegW, MemW,
+               FlagW, PCS, RegW, MemW, NoWrite, 
                PCSrc, RegWrite, MemWrite);
 endmodule
 
@@ -197,7 +198,7 @@ module decoder(input  logic [1:0] Op,
                input  logic [5:0] Funct,
                input  logic [3:0] Rd,
                output logic [1:0] FlagW,
-               output logic       PCS, RegW, MemW,
+               output logic       PCS, RegW, MemW, NoWrite, 
                output logic       MemtoReg, ALUSrc,
                output logic [1:0] ImmSrc, RegSrc, ALUControl);
 
@@ -223,7 +224,7 @@ module decoder(input  logic [1:0] Op,
   	endcase
 
   assign {RegSrc, ImmSrc, ALUSrc, MemtoReg, 
-          RegW, MemW, Branch, ALUOp} = controls; 
+          RegW, MemW, NoWrite, Branch, ALUOp} = controls; 
           
   // ALU Decoder             
   always_comb
@@ -231,13 +232,18 @@ module decoder(input  logic [1:0] Op,
       case(Funct[4:1]) 
   	    4'b0100: ALUControl = 2'b00; // ADD
   	    4'b0010: ALUControl = 2'b01; // SUB
-          4'b0000: ALUControl = 2'b10; // AND
+        4'b0000: ALUControl = 2'b10; // AND
   	    4'b1100: ALUControl = 2'b11; // ORR
+		4'b1010: ALUControl = 2'b01; // CMP
+		4'b1000: ALUControl = 2'b10; // TST
   	    default: ALUControl = 2'bx;  // unimplemented
       endcase
-      // update flags if S bit is set 
+	if (Funct[4:1] == 4'b1010) NoWrite = 1; 
+	else if (Funct[4:1] == 4'b1000) NoWrite = 1;
+	else NoWrite = 0;
+    // update flags if S bit is set 
 	// (C & V only updated for arith instructions)
-      FlagW[1]      = Funct[0]; // FlagW[1] = S-bit
+      FlagW[1]      = Funct[0]; // FlagW[1] = S-bit(Se S = 1, Bit 1 da Flag = 1)
 	// FlagW[0] = S-bit & (ADD | SUB)
       FlagW[0]      = Funct[0] & 
         (ALUControl == 2'b00 | ALUControl == 2'b01); 
@@ -254,7 +260,7 @@ module condlogic(input  logic       clk, reset,
                  input  logic [3:0] Cond,
                  input  logic [3:0] ALUFlags,
                  input  logic [1:0] FlagW,
-                 input  logic       PCS, RegW, MemW,
+                 input  logic       PCS, RegW, MemW, NoWrite,
                  output logic       PCSrc, RegWrite, MemWrite);
                  
   logic [1:0] FlagWrite;
@@ -269,7 +275,7 @@ module condlogic(input  logic       clk, reset,
   // write controls are conditional
   condcheck cc(Cond, Flags, CondEx);
   assign FlagWrite = FlagW & {2{CondEx}};
-  assign RegWrite  = RegW  & CondEx;
+  assign RegWrite  = (RegW  & CondEx)& ~NoWrite;
   assign MemWrite  = MemW  & CondEx;
   assign PCSrc     = PCS   & CondEx;
 endmodule    
